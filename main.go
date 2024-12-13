@@ -21,21 +21,21 @@ type config struct {
 	directory string
 }
 
-// NewConfig creates a new config struct from environment variables
+// NewConfig creates a config struct from environment variables
 func newConfig() *config {
 	return &config{
-		host:      os.Getenv("DB_HOST"),       // ex: localhost
-		port:      os.Getenv("DB_PORT"),       // ex: 5432
-		user:      os.Getenv("DB_USER"),       // ex: postgres
-		password:  os.Getenv("DB_PASSWORD"),   // ex: password
-		database:  os.Getenv("DB_NAME"),       // ex: mydb
-		driver:    os.Getenv("DB_DRIVER"),     // ex: postgres
-		directory: os.Getenv("MIGRATION_DIR"), // ex: ./migrations
+		host:      os.Getenv("DB_HOST"),         // ex: localhost
+		port:      os.Getenv("DB_PORT"),         // ex: 5432
+		user:      os.Getenv("DB_USER"),         // ex: postgres
+		password:  os.Getenv("DB_PASSWORD"),     // ex: password
+		database:  os.Getenv("DB_NAME"),         // ex: mydb
+		driver:    os.Getenv("DB_DRIVER"),       // ex: postgres
+		directory: os.Getenv("MIGRATIONS_PATH"), // ex: ./migrations
 		//table:     os.Getenv("MIGRATION_TABLE"), // ex: _migration
 	}
 }
 
-// Main function to run migrations
+// Main function to run pending migrations
 func main() {
 	ctx := context.Background()
 	config := newConfig()
@@ -48,6 +48,7 @@ func main() {
 	}
 
 	if len(migrations) == 0 {
+		log.Println("No migrations found")
 		return
 	}
 
@@ -63,7 +64,6 @@ func main() {
 		if err != nil {
 			err := transaction.Rollback()
 			log.Fatal(err)
-			return
 		}
 	}
 
@@ -75,21 +75,30 @@ func connectDB(config *config) *sql.DB {
 	var connector driver.Connector
 
 	if config.driver == "postgres" {
-		dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", config.host, config.port, config.user, config.password, config.database)
+		dsn := fmt.Sprintf(
+			"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+			config.host, config.port, config.user, config.password, config.database)
+
 		connector, err = pq.NewConnector(dsn)
 	}
 
+	if connector == nil {
+		log.Fatal("Error invalid driver: ", config.driver)
+	}
+
 	if err != nil {
-		panic(err)
+		log.Fatal("Error creating connector: ", err)
 	}
 
 	db := sql.OpenDB(connector)
 
-	defer db.Close()
+	err = db.Ping()
 
-	if err := db.Ping(); err != nil {
-		panic(err)
+	if err != nil {
+		log.Fatal("Error connecting to the database: ", err)
 	}
+
+	log.Println("Connected to the database")
 
 	return db
 }
@@ -102,8 +111,7 @@ func createMigrationsTable(db *sql.DB) error {
       name VARCHAR(255) NOT NULL,
       batch INTEGER NOT NULL,
       applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-    );
-    `)
+    );`)
 
 	return err
 }
@@ -134,7 +142,7 @@ func getMigrationsSQL(directory string) ([]string, error) {
 		scanner := bufio.NewScanner(file)
 
 		for scanner.Scan() {
-			migration += scanner.Text()
+			migration += scanner.Text() + "\n"
 		}
 
 		if err := scanner.Err(); err != nil {

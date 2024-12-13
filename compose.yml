@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: gomi-db-container
+    ports:
+      - ${DB_PORT}:${DB_PORT}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $DB_USER -p $DB_PORT -d $DB_NAME"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    environment:
+      - PGPORT=${DB_PORT}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_DB=${DB_NAME}
+    networks:
+      - gomi-network
+
+  gomi:
+    container_name: gomi-migrations-container
+    build: ./
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_DRIVER=${DB_DRIVER}
+      - MIGRATIONS_PATH=${MIGRATIONS_PATH}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gomi-network
+
+networks:
+  gomi-network:
+    driver: bridge
+
+volumes:
+  postgres:
+    name: gomi-db-volume
+
