@@ -1,157 +1,222 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
+	"flag"
 	"fmt"
 	"github.com/lib/pq"
 	"log"
 	"os"
+	"path/filepath"
+	"strconv"
 )
+
+type migration struct {
+	name string
+	sql  string
+}
 
 type config struct {
 	host      string
-	port      string
+	port      int
 	user      string
 	password  string
 	database  string
 	driver    string
 	directory string
-}
-
-// NewConfig creates a config struct from environment variables
-func newConfig() *config {
-	return &config{
-		host:      os.Getenv("DB_HOST"),         // ex: localhost
-		port:      os.Getenv("DB_PORT"),         // ex: 5432
-		user:      os.Getenv("DB_USER"),         // ex: postgres
-		password:  os.Getenv("DB_PASSWORD"),     // ex: password
-		database:  os.Getenv("DB_NAME"),         // ex: mydb
-		driver:    os.Getenv("DB_DRIVER"),       // ex: postgres
-		directory: os.Getenv("MIGRATIONS_PATH"), // ex: ./migrations
-		//table:     os.Getenv("MIGRATION_TABLE"), // ex: _migration
-	}
+	table     string
 }
 
 // Main function to run pending migrations
 func main() {
-	ctx := context.Background()
-	config := newConfig()
-	db := connectDB(config)
+	config := ParseFlags()
 
-	migrations, err := getMigrationsSQL(config.directory)
+	// Connect to the database using the connector
+	log.Println("Phase 1: Connecting to the database...")
 
+	db, err := ConnectDB(config)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if len(migrations) == 0 {
-		log.Println("No migrations found")
-		return
-	}
+	log.Println("Phase 1: Database connected.")
 
-	transaction, err := db.BeginTx(ctx, nil)
+	// Get the new migrations from the directory
+	log.Println("Phase 2: Getting new migrations...")
 
+	migrations, err := GetNewMigrations(db, config.table, config.directory)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for _, migration := range migrations {
-		_, err := transaction.Exec(migration)
+	log.Println("Phase 2: Found", len(migrations), "new migration(s).")
 
-		if err != nil {
-			err := transaction.Rollback()
-			log.Fatal(err)
-		}
+	// Run the migrations against the database
+	log.Println("Phase 3: Running migrations...")
+
+	err = RunMigrations(db, config.table, migrations)
+	if err != nil {
+		log.Fatal(err)
 	}
 
+	log.Println("Phase 3: Migrations complete.")
 }
 
-// connectDB connects to the database
-func connectDB(config *config) *sql.DB {
-	var err error
-	var connector driver.Connector
+// Parse the command line flags and return a config struct
+func ParseFlags() *config {
+	hostPtr := flag.String("host", "localhost", "Database host")
+	portPtr := flag.Int("port", 5432, "Database port")
+	userPtr := flag.String("user", "gomi", "Database username")
+	passwordPtr := flag.String("password", "gomi", "Database password")
+	databasePtr := flag.String("database", "gomi", "Database name")
+	driverPtr := flag.String("driver", "postgres", "Database SQL driver")
+	directoryPtr := flag.String("directory", "./migrations", "Directory containing migration files")
+	tablePtr := flag.String("table", "_migration", "Table to store migration history")
 
+	flag.Parse()
+
+	return &config{
+		host:      *hostPtr,
+		port:      *portPtr,
+		user:      *userPtr,
+		password:  *passwordPtr,
+		database:  *databasePtr,
+		driver:    *driverPtr,
+		directory: *directoryPtr,
+		table:     *tablePtr,
+	}
+}
+
+// Get a database connector for the given config
+func GetDBConnector(config *config) (driver.Connector, error) {
 	if config.driver == "postgres" {
-		dsn := fmt.Sprintf(
-			"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-			config.host, config.port, config.user, config.password, config.database)
-
-		connector, err = pq.NewConnector(dsn)
+		dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+			config.host, strconv.Itoa(config.port), config.user, config.password, config.database)
+		return pq.NewConnector(dsn)
 	}
 
-	if connector == nil {
-		log.Fatal("Error invalid driver: ", config.driver)
-	}
+	return nil, fmt.Errorf("Error database driver not supported: '%s'", config.driver)
+}
+
+// Connect to the database using the given connector
+func ConnectDB(config *config) (*sql.DB, error) {
+	connector, err := GetDBConnector(config)
 
 	if err != nil {
-		log.Fatal("Error creating connector: ", err)
+		log.Fatal(err)
 	}
 
 	db := sql.OpenDB(connector)
 
-	err = db.Ping()
-
-	if err != nil {
-		log.Fatal("Error connecting to the database: ", err)
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("Error pinging database: %s", err)
 	}
 
-	log.Println("Connected to the database")
-
-	return db
+	return db, nil
 }
 
-// createMigrationsTable creates the migrations table
-func createMigrationsTable(db *sql.DB) error {
-	_, err := db.Exec(`
-    CREATE TABLE IF NOT EXISTS _migration (
+// Run the migrations against the database and record them in the tracking table
+func RunMigrations(db *sql.DB, table string, migrations []migration) error {
+	transaction, err := db.BeginTx(context.TODO(), nil)
+
+	if err != nil {
+		return fmt.Errorf("Error starting transaction: %s", err)
+	}
+
+	// Apply each migration and record it in the tracking table
+	for _, migration := range migrations {
+		log.Println("Running migration:", migration.name)
+
+		// Execute the migration SQL
+		_, err := transaction.Exec(migration.sql)
+
+		if err != nil {
+			txErr := transaction.Rollback()
+			return fmt.Errorf("Error executing migration: %s", errors.Join(err, txErr))
+		}
+
+		// Record the migration in the tracking table
+		_, err = transaction.Exec(fmt.Sprintf(`INSERT INTO public.%s (name) VALUES ($1);`, table), migration.name)
+
+		if err != nil {
+			txErr := transaction.Rollback()
+			return fmt.Errorf("Error inserting migration record: %s", errors.Join(err, txErr))
+		}
+	}
+
+	return transaction.Commit()
+}
+
+func GetAppliedMigrations(db *sql.DB, table string) (map[string]bool, error) {
+	_, err := db.Exec(fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS public.%s (
       id SERIAL PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
-      batch INTEGER NOT NULL,
-      applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-    );`)
+      applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL);
+    `, table))
 
-	return err
+	if err != nil {
+		return nil, fmt.Errorf("Error creating migration tracking table: %s", err)
+	}
+
+	rows, err := db.Query(fmt.Sprintf(`SELECT name FROM public.%s;`, table))
+
+	if err != nil {
+		return nil, fmt.Errorf("Error getting applied migrations: %s", err)
+	}
+
+	defer rows.Close()
+
+	appliedMigrations := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		err := rows.Scan(&name)
+
+		if err != nil {
+			return nil, fmt.Errorf("Error scanning applied migration: %s", err)
+		}
+
+		appliedMigrations[name] = true
+	}
+
+	return appliedMigrations, nil
 }
 
-// getCompletedMigrations returns a list of completed migrations from the database table
-func getCompletedMigrations(db *sql.DB) ([]string, error) {
-	return nil, nil
-}
-
-// getMigrationsSQL reads the SQL files from the directory and returns a list of migrations as strings
-func getMigrationsSQL(directory string) ([]string, error) {
+// Reads SQL migration files from a directory and returns a list of non-applied migrations
+func GetNewMigrations(db *sql.DB, table string, directory string) ([]migration, error) {
 	entries, err := os.ReadDir(directory)
-	var migrations []string
+
+	if err != nil {
+		return nil, fmt.Errorf("Error reading directory: %s", err)
+	}
+
+	appliedMigrations, err := GetAppliedMigrations(db, table)
 
 	if err != nil {
 		return nil, err
 	}
 
+	var migrations []migration
 	for _, entry := range entries {
-		var migration string
+		if appliedMigrations[entry.Name()] {
+			continue // Skip previously applied migrations
+		}
 
-		file, err := os.Open(directory + "/" + entry.Name())
+		if entry.IsDir() {
+			continue // Skip directories
+		}
+
+		filePath := filepath.Join(directory, entry.Name())
+		content, err := os.ReadFile(filePath)
 
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("Error reading file: '%s': %w", filePath, err)
 		}
 
-		scanner := bufio.NewScanner(file)
-
-		for scanner.Scan() {
-			migration += scanner.Text() + "\n"
-		}
-
-		if err := scanner.Err(); err != nil {
-			return nil, err
-		}
-
-		migrations = append(migrations, migration)
-
-		file.Close()
+		migrations = append(migrations, migration{name: entry.Name(), sql: string(content)})
 	}
 
 	return migrations, nil
