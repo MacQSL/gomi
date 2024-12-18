@@ -1,13 +1,8 @@
--include .env
-
-# Apply the contents of the .env to the terminal, so that the docker-compose file can use them in its builds
-export $(shell sed 's/=.*//' .env)
-
 postgres: ## Run postgres container
 	@echo "==============================================="
 	@echo "Make: postgres - run postgres container"
 	@echo "==============================================="
-	@docker compose up -d postgres gomi
+	@docker compose up -d postgres gomi-postgres
 
 close: ## Closes all project containers
 	@echo "==============================================="
