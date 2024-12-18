@@ -19,22 +19,6 @@ services:
     networks:
       - gomi-network
 
-  # gomi:
-  #   container_name: gomi-migrations-container
-  #   build: ./
-  #   environment:
-  #     - DB_HOST=${DB_HOST}
-  #     - DB_PORT=${DB_PORT}
-  #     - DB_PASSWORD=${DB_PASSWORD}
-  #     - DB_NAME=${DB_NAME}
-  #     - DB_DRIVER=${DB_DRIVER}
-  #     - MIGRATIONS_PATH=${MIGRATIONS_PATH}
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #   networks:
-  #     - gomi-network
-
 networks:
   gomi-network:
     driver: bridge

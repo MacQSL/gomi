@@ -7,7 +7,7 @@ postgres: ## Run postgres container
 	@echo "==============================================="
 	@echo "Make: postgres - run postgres container"
 	@echo "==============================================="
-	@docker compose up -d postgres
+	@docker compose up -d postgres gomi
 
 close: ## Closes all project containers
 	@echo "==============================================="

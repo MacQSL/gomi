@@ -107,7 +107,7 @@ func connectDB(config *config) (*sql.DB, error) {
 	db := sql.OpenDB(connector)
 
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("Error pinging database: %s", err)
+		return nil, fmt.Errorf("Error pinging database: %v", err)
 	}
 
 	return db, nil
@@ -118,7 +118,7 @@ func runMigrations(db *sql.DB, table string, migrations []migration) error {
 	transaction, err := db.BeginTx(context.TODO(), nil)
 
 	if err != nil {
-		return fmt.Errorf("Error starting transaction: %s", err)
+		return fmt.Errorf("Error starting transaction: %v", err)
 	}
 
 	// Apply each migration and record it in the tracking table
@@ -129,14 +129,14 @@ func runMigrations(db *sql.DB, table string, migrations []migration) error {
 		_, err := transaction.Exec(migration.sql)
 
 		if err != nil {
-			return fmt.Errorf("Error executing migration: %s", errors.Join(err, transaction.Rollback()))
+			return fmt.Errorf("Error executing migration: %v", errors.Join(err, transaction.Rollback()))
 		}
 
 		// Record the migration in the tracking table
 		_, err = transaction.Exec(fmt.Sprintf("INSERT INTO public.%s (name) VALUES ($1);", table), migration.name)
 
 		if err != nil {
-			return fmt.Errorf("Error inserting migration record: %s", errors.Join(err, transaction.Rollback()))
+			return fmt.Errorf("Error inserting migration record: %v", errors.Join(err, transaction.Rollback()))
 		}
 	}
 
@@ -145,6 +145,7 @@ func runMigrations(db *sql.DB, table string, migrations []migration) error {
 
 // Get a map (set) of applied migrations from the tracking table
 func getAppliedMigrations(db *sql.DB, table string) (map[string]bool, error) {
+	// TODO: Is there a better place to create the tracking table?
 	_, err := db.Exec(fmt.Sprintf(`
     CREATE TABLE IF NOT EXISTS public.%s (
       id SERIAL PRIMARY KEY,
@@ -153,13 +154,13 @@ func getAppliedMigrations(db *sql.DB, table string) (map[string]bool, error) {
     `, table))
 
 	if err != nil {
-		return nil, fmt.Errorf("Error creating migration tracking table: %s", err)
+		return nil, fmt.Errorf("Error creating migration tracking table: %v", err)
 	}
 
 	rows, err := db.Query(fmt.Sprintf("SELECT name FROM public.%s;", table))
 
 	if err != nil {
-		return nil, fmt.Errorf("Error getting applied migrations: %s", err)
+		return nil, fmt.Errorf("Error getting applied migrations: %v", err)
 	}
 
 	defer rows.Close()
@@ -167,13 +168,14 @@ func getAppliedMigrations(db *sql.DB, table string) (map[string]bool, error) {
 	appliedMigrations := make(map[string]bool)
 	for rows.Next() {
 		var name string
-		err := rows.Scan(&name)
-
-		if err != nil {
-			return nil, fmt.Errorf("Error scanning applied migration: %s", err)
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("Error scanning applied migration: %v", err)
 		}
-
 		appliedMigrations[name] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("Error reading applied migrations: %v", err)
 	}
 
 	return appliedMigrations, nil
@@ -184,7 +186,7 @@ func getNewMigrations(db *sql.DB, table string, directory string) ([]migration, 
 	entries, err := os.ReadDir(directory)
 
 	if err != nil {
-		return nil, fmt.Errorf("Error reading directory: %s", err)
+		return nil, fmt.Errorf("Error reading directory: %v", err)
 	}
 
 	appliedMigrations, err := getAppliedMigrations(db, table)
@@ -195,19 +197,15 @@ func getNewMigrations(db *sql.DB, table string, directory string) ([]migration, 
 
 	var migrations []migration
 	for _, entry := range entries {
-		if appliedMigrations[entry.Name()] {
-			continue // Skip previously applied migrations
-		}
-
-		if entry.IsDir() {
-			continue // Skip directories
+		if entry.IsDir() || appliedMigrations[entry.Name()] {
+			continue // Skip directories and previously applied migrations
 		}
 
 		filePath := filepath.Join(directory, entry.Name())
 		content, err := os.ReadFile(filePath)
 
 		if err != nil {
-			return nil, fmt.Errorf("Error reading file: '%s': %w", filePath, err)
+			return nil, fmt.Errorf("Error reading file: '%s': %v", filePath, err)
 		}
 
 		migrations = append(migrations, migration{name: entry.Name(), sql: string(content)})

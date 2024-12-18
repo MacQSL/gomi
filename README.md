@@ -1,2 +1,2 @@
-# gomi
-Simple migrations via Golang
+# Gomi - Golang Migrations
+Simple relational database migrations via Golang
